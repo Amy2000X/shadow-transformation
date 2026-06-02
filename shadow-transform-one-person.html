@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shadow Transform · One person</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #111;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    font-family: 'Courier New', monospace;
+    color: #aaa;
+    gap: 14px;
+    padding: 24px;
+  }
+
+  .label {
+    font-size: 10px;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    opacity: 0.35;
+  }
+
+  #stage {
+    position: relative;
+    width: 640px;
+    height: 480px;
+    border-radius: 3px;
+    overflow: hidden;
+    transform: scaleX(-1);
+  }
+
+  canvas { display: block; }
+
+  #shadow-canvas {
+    position: absolute;
+    top: 0; left: 0;
+    pointer-events: none;
+  }
+
+
+  #debug-canvas {
+    position: absolute;
+    top: 0; left: 0;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.2s;
+  }
+
+  #debug-canvas.visible { opacity: 1; }
+
+  #hud {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    transform: scaleX(-1);
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 14px 16px;
+  }
+
+  .hud-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .badge {
+    font-size: 10px;
+    letter-spacing: 2px;
+    padding: 4px 10px;
+    border: 1px solid rgba(255,255,255,0.2);
+    border-radius: 2px;
+    background: rgba(0,0,0,0.35);
+    backdrop-filter: blur(4px);
+    transition: border-color 0.3s, color 0.3s, background 0.3s;
+    color: #bbb;
+  }
+
+  .badge.panther {
+    border-color: rgba(255,120,40,0.7);
+    background: rgba(140,50,0,0.5);
+    color: #ffaa60;
+  }
+
+  .badge.morphing {
+    border-color: rgba(200,160,80,0.6);
+    background: rgba(100,70,10,0.4);
+    color: #e8c070;
+  }
+
+  .badge.loading {
+    border-color: rgba(100,180,255,0.4);
+    color: #88ccff;
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+
+  @keyframes pulse { 0%,100%{opacity:.5} 50%{opacity:1} }
+
+  #morph-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 9px;
+    letter-spacing: 2px;
+    color: rgba(255,255,255,0.4);
+  }
+
+  #morph-track {
+    width: 72px;
+    height: 2px;
+    background: rgba(255,255,255,0.12);
+    border-radius: 1px;
+    overflow: hidden;
+  }
+
+  #morph-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #886600, #ff8820);
+    border-radius: 1px;
+  }
+
+  #hint {
+    font-size: 10px;
+    letter-spacing: 1px;
+    color: rgba(255,255,255,0.28);
+    text-align: center;
+  }
+
+  video { display: none; }
+</style>
+</head>
+<body>
+
+<div class="label">Shadow Transform · POC v3</div>
+
+<!--
+  SVG SLIME FILTER — three-stage organic distortion
+  ──────────────────────────────────────────────────
+  1. feTurbulence  — animated Perlin noise (SMIL shifts baseFrequency
+     continuously so the noise flows organically with zero JS overhead).
+  2. feDisplacementMap — displaces canvas pixels by the noise.
+     `scale` set per-frame from JS: 0 at rest, peaks ~65px mid-morph.
+  3. feGaussianBlur + feColorMatrix threshold — the "blob" step.
+     Blurs the distorted shape, then the high-alpha-contrast matrix
+     snaps it back to a hard organic edge (liquid / slime boundary).
+-->
+<svg style="position:absolute;width:0;height:0;overflow:hidden" aria-hidden="true">
+  <defs>
+    <filter id="slime"
+            x="-40%" y="-40%" width="180%" height="180%"
+            color-interpolation-filters="sRGB">
+
+      <feTurbulence id="slimeTurb"
+                    type="turbulence"
+                    baseFrequency="0.014 0.010"
+                    numOctaves="4"
+                    seed="3"
+                    result="noise">
+        <animate attributeName="baseFrequency"
+                 values="0.014 0.010;0.009 0.018;0.020 0.007;0.016 0.013;0.012 0.020;0.014 0.010"
+                 dur="6s"
+                 repeatCount="indefinite"/>
+      </feTurbulence>
+
+      <feDisplacementMap id="slimeDisp"
+                         in="SourceGraphic"
+                         in2="noise"
+                         scale="0"
+                         xChannelSelector="R"
+                         yChannelSelector="G"
+                         result="warped"/>
+
+      <feGaussianBlur in="warped" stdDeviation="7" result="blurred"/>
+      <feColorMatrix  in="blurred" type="matrix"
+                      values="1 0 0 0 0
+                              0 1 0 0 0
+                              0 0 1 0 0
+                              0 0 0 50 -18"/>
+    </filter>
+  </defs>
+</svg>
+
+<div id="stage">
+  <canvas id="bg-canvas"     width="640" height="480"></canvas>
+  <canvas id="shadow-canvas" width="640" height="480"></canvas>
+  <canvas id="debug-canvas"  width="640" height="480"></canvas>
+  <div id="hud">
+    <div class="hud-row">
+      <span id="mode-badge" class="badge loading">&#9675; LOADING</span>
+      <div id="morph-wrap">
+        <span>MORPH</span>
+        <div id="morph-track"><div id="morph-fill"></div></div>
+        <span id="morph-pct">0%</span>
+      </div>
+    </div>
+    <div id="hint">Initialising camera &amp; model…</div>
+  </div>
+</div>
+
+<video id="video" autoplay playsinline muted></video>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"         crossorigin="anonymous"></script>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════
+//  CONSTANTS
+// ═══════════════════════════════════════════════════════════════════
+const W = 640, H = 480;
+const BG_WALL    = '#dbd4c8';
+const BG_FLOOR   = '#c9c1b4';
+const FLOOR_Y    = H * 0.87;
+const SHADOW_COL = '#0e0b08';
+
+const MORPH_IN_SPEED  = 0.030;
+const MORPH_OUT_SPEED = 0.018;
+const HOLD_FRAMES     = 6;
+const SLIME_PEAK      = 65;   // max displacement in pixels at mid-morph
+
+// ═══════════════════════════════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════════════════════════════
+let morphProgress = 0;
+let pantherActive = false;
+let holdCounter   = 0;
+let poseResults   = null;
+let personBounds  = { x: 160, y: 20, w: 320, h: 440 };
+let debugVisible  = false;
+
+// ═══════════════════════════════════════════════════════════════════
+//  DOM
+// ═══════════════════════════════════════════════════════════════════
+const bgCanvas     = document.getElementById('bg-canvas');
+const bgCtx        = bgCanvas.getContext('2d');
+const shadowCanvas = document.getElementById('shadow-canvas');
+const shadowCtx    = shadowCanvas.getContext('2d');
+const debugCvs     = document.getElementById('debug-canvas');
+const dctx         = debugCvs.getContext('2d');
+const morphFill    = document.getElementById('morph-fill');
+const morphPct     = document.getElementById('morph-pct');
+const modeBadge    = document.getElementById('mode-badge');
+const hintEl       = document.getElementById('hint');
+const slimeDisp    = document.getElementById('slimeDisp');
+
+// ═══════════════════════════════════════════════════════════════════
+//  POSE DETECTION  (unchanged from v1 — user confirmed working)
+// ═══════════════════════════════════════════════════════════════════
+function detectTigerPose(lm) {
+  if (!lm || lm.length < 33) return false;
+  const lS=lm[11], rS=lm[12], lW=lm[15], rW=lm[16];
+  const lH=lm[23], rH=lm[24], lK=lm[25], rK=lm[26];
+  if ([lS,rS,lW,rW,lH,rH,lK,rK].some(p => p.visibility < 0.45)) return false;
+  const avgShY = (lS.y+rS.y)/2, avgHY=(lH.y+rH.y)/2, avgKY=(lK.y+rK.y)/2;
+  const bodyH  = avgKY - avgShY;
+  const hipKneeRatio    = (avgKY - avgHY) / bodyH;
+  const shoulderSpan    = Math.abs(rS.x - lS.x);
+  const wristSpan       = Math.abs(rW.x - lW.x);
+  return (hipKneeRatio < 0.36) &&
+         (wristSpan > shoulderSpan * 1.65) &&
+         (lW.y < avgHY + 0.05) && (rW.y < avgHY + 0.05);
+}
+
+function updatePersonBounds(lm) {
+  if (!lm) return;
+  const vis = lm.filter(p => p.visibility > 0.35);
+  if (vis.length < 5) return;
+  const xs=vis.map(p=>p.x*W), ys=vis.map(p=>p.y*H);
+  const px=50, py=65;
+  const x = Math.max(0, Math.min(...xs)-px);
+  const y = Math.max(0, Math.min(...ys)-py);
+  personBounds = {
+    x, y,
+    w: Math.min(W, Math.max(...xs)+px) - x,
+    h: Math.min(H, Math.max(...ys)+py) - y
+  };
+}
+
+function easeInOut(t) { return t<0.5 ? 2*t*t : -1+(4-2*t)*t; }
+
+// ═══════════════════════════════════════════════════════════════════
+//  DRAW: HUMAN SILHOUETTE
+// ═══════════════════════════════════════════════════════════════════
+function drawHuman(tCtx, segMask, alpha) {
+  if (!segMask || alpha < 0.005) return;
+  const off  = new OffscreenCanvas(W, H);
+  const octx = off.getContext('2d');
+  octx.drawImage(segMask, 0, 0, W, H);
+  octx.globalCompositeOperation = 'source-in';
+  octx.fillStyle = SHADOW_COL;
+  octx.fillRect(0, 0, W, H);
+  tCtx.save();
+  tCtx.globalAlpha = alpha;
+  tCtx.drawImage(off, 0, 0);
+  tCtx.restore();
+}
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  DRAW: EXACT PANTHER  — Path2D from Tiger_shadow.svg
+//  Main silhouette path (fill="#100402"), SVG transform: translate(65,2)
+//  The path uses absolute coordinates; negative x values (-51 min)
+//  are resolved by applying translate(65,2) in the canvas context.
+// ═══════════════════════════════════════════════════════════════════
+const PANTHER_D = `M0 0 C1.65 0 3.3 0 5 0 C5 0.99 5 1.98 5 3 C6.65 3 8.3 3 10 3 C10 3.66 10 4.32 10 5 C10.66 5 11.32 5 12 5 C12 5.66 12 6.32 12 7 C12.66 7 13.32 7 14 7 C14 8.65 14 10.3 14 12 C14.99 12 15.98 12 17 12 C17 13.65 17 15.3 17 17 C17.66 17 18.32 17 19 17 C19 17.66 19 18.32 19 19 C21.31 19 23.62 19 26 19 C26 19.99 26 20.98 26 22 C27.65 22 29.3 22 31 22 C31 22.66 31 23.32 31 24 C32.65 24 34.3 24 36 24 C36 24.99 36 25.98 36 27 C37.65 27 39.3 27 41 27 C41 27.66 41 28.32 41 29 C44.96 29 48.92 29 53 29 C53 29.99 53 30.98 53 32 C54.65 32 56.3 32 58 32 C58 32.66 58 33.32 58 34 C61.96 34 65.92 34 70 34 C70 34.66 70 35.32 70 36 C71.65 36 73.3 36 75 36 C75 36.99 75 37.98 75 39 C76.65 39 78.3 39 80 39 C80 39.66 80 40.32 80 41 C81.65 41 83.3 41 85 41 C85 41.99 85 42.98 85 44 C86.32 44 87.64 44 89 44 C89 44.66 89 45.32 89 46 C92.3 46 95.6 46 99 46 C99 46.99 99 47.98 99 49 C106.92 49 114.84 49 123 49 C123 48.01 123 47.02 123 46 C129.6 46 136.2 46 143 46 C143 45.34 143 44.68 143 44 C147.62 44 152.24 44 157 44 C157 43.01 157 42.02 157 41 C161.95 41 166.9 41 172 41 C172 40.34 172 39.68 172 39 C177.61 39 183.22 39 189 39 C189 38.01 189 37.02 189 36 C201.54 36 214.08 36 227 36 C227 36.99 227 37.98 227 39 C229.64 39 232.28 39 235 39 C235 39.66 235 40.32 235 41 C236.65 41 238.3 41 240 41 C240 41.99 240 42.98 240 44 C242.31 44 244.62 44 247 44 C247 44.66 247 45.32 247 46 C248.65 46 250.3 46 252 46 C252 46.99 252 47.98 252 49 C253.32 49 254.64 49 256 49 C256 49.66 256 50.32 256 51 C256.99 51 257.98 51 259 51 C259 51.66 259 52.32 259 53 C259.66 53 260.32 53 261 53 C261 53.99 261 54.98 261 56 C261.99 56 262.98 56 264 56 C264 56.66 264 57.32 264 58 C264.66 58 265.32 58 266 58 C266 58.99 266 59.98 266 61 C266.99 61 267.98 61 269 61 C269 61.66 269 62.32 269 63 C269.66 63 270.32 63 271 63 C271 63.66 271 64.32 271 65 C271.66 65 272.32 65 273 65 C273 66.65 273 68.3 273 70 C273.99 70 274.98 70 276 70 C276 71.65 276 73.3 276 75 C276.66 75 277.32 75 278 75 C278 79.95 278 84.9 278 90 C278.99 90 279.98 90 281 90 C281 101.22 281 112.44 281 124 C281.66 124 282.32 124 283 124 C283 130.93 283 137.86 283 145 C283.66 145 284.32 145 285 145 C285 147.64 285 150.28 285 153 C285.99 153 286.98 153 288 153 C288 154.65 288 156.3 288 158 C288.66 158 289.32 158 290 158 C290 158.66 290 159.32 290 160 C290.99 160 291.98 160 293 160 C293 160.66 293 161.32 293 162 C293.66 162 294.32 162 295 162 C295 162.99 295 163.98 295 165 C295.99 165 296.98 165 298 165 C298 165.66 298 166.32 298 167 C302.62 167 307.24 167 312 167 C312 166.34 312 165.68 312 165 C312.99 165 313.98 165 315 165 C315 163.35 315 161.7 315 160 C315.66 160 316.32 160 317 160 C317 158.35 317 156.7 317 155 C317.66 155 318.32 155 319 155 C319 152.69 319 150.38 319 148 C319.99 148 320.98 148 322 148 C322 147.01 322 146.02 322 145 C323.65 145 325.3 145 327 145 C327 145.99 327 146.98 327 148 C327.66 148 328.32 148 329 148 C329 151.3 329 154.6 329 158 C328.34 158 327.68 158 327 158 C327 160.31 327 162.62 327 165 C326.01 165 325.02 165 324 165 C324 165.66 324 166.32 324 167 C323.34 167 322.68 167 322 167 C322 168.65 322 170.3 322 172 C321.01 172 320.02 172 319 172 C319 172.66 319 173.32 319 174 C318.34 174 317.68 174 317 174 C317 174.99 317 175.98 317 177 C314.69 177 312.38 177 310 177 C310 177.66 310 178.32 310 179 C305.05 179 300.1 179 295 179 C295 178.34 295 177.68 295 177 C293.35 177 291.7 177 290 177 C290 176.01 290 175.02 290 174 C289.34 174 288.68 174 288 174 C288 173.34 288 172.68 288 172 C287.01 172 286.02 172 285 172 C285 171.34 285 170.68 285 170 C284.34 170 283.68 170 283 170 C283 169.01 283 168.02 283 167 C282.34 167 281.68 167 281 167 C281 166.34 281 165.68 281 165 C280.01 165 279.02 165 278 165 C278 163.35 278 161.7 278 160 C277.34 160 276.68 160 276 160 C276 157.69 276 155.38 276 153 C275.01 153 274.02 153 273 153 C273 150.36 273 147.72 273 145 C272.34 145 271.68 145 271 145 C271 138.73 271 132.46 271 126 C270.34 126 269.68 126 269 126 C269 121.38 269 116.76 269 112 C268.01 112 267.02 112 266 112 C266 130.15 266 148.3 266 167 C266.99 167 267.98 167 269 167 C269 168.65 269 170.3 269 172 C269.66 172 270.32 172 271 172 C271 173.65 271 175.3 271 177 C271.66 177 272.32 177 273 177 C273 180.96 273 184.92 273 189 C272.34 189 271.68 189 271 189 C271 190.65 271 192.3 271 194 C270.34 194 269.68 194 269 194 C269 194.66 269 195.32 269 196 C268.01 196 267.02 196 266 196 C266 197.65 266 199.3 266 201 C265.34 201 264.68 201 264 201 C264 201.99 264 202.98 264 204 C263.01 204 262.02 204 261 204 C261 204.66 261 205.32 261 206 C260.34 206 259.68 206 259 206 C259 207.65 259 209.3 259 211 C257.35 211 255.7 211 254 211 C254 211.66 254 212.32 254 213 C253.34 213 252.68 213 252 213 C252 213.99 252 214.98 252 216 C250.35 216 248.7 216 247 216 C247 216.66 247 217.32 247 218 C246.01 218 245.02 218 244 218 C244 218.66 244 219.32 244 220 C237.73 220 231.46 220 225 220 C225 219.34 225 218.68 225 218 C224.34 218 223.68 218 223 218 C223 214.7 223 211.4 223 208 C222.01 208 221.02 208 220 208 C220 208.99 220 209.98 220 211 C219.34 211 218.68 211 218 211 C218 212.65 218 214.3 218 216 C217.01 216 216.02 216 215 216 C215 216.66 215 217.32 215 218 C214.34 218 213.68 218 213 218 C213 218.66 213 219.32 213 220 C205.08 220 197.16 220 189 220 C189 217.03 189 214.06 189 211 C189.66 211 190.32 211 191 211 C191 210.01 191 209.02 191 208 C191.99 208 192.98 208 194 208 C194 207.34 194 206.68 194 206 C198.62 206 203.24 206 208 206 C208 204.35 208 202.7 208 201 C208.66 201 209.32 201 210 201 C210 199.35 210 197.7 210 196 C210.99 196 211.98 196 213 196 C213 194.35 213 192.7 213 191 C213.66 191 214.32 191 215 191 C215 188.69 215 186.38 215 184 C214.34 184 213.68 184 213 184 C213 181.69 213 179.38 213 177 C212.01 177 211.02 177 210 177 C210 175.35 210 173.7 210 172 C209.34 172 208.68 172 208 172 C208 170.35 208 168.7 208 167 C207.34 167 206.68 167 206 167 C206 165.35 206 163.7 206 162 C205.01 162 204.02 162 203 162 C203 160.68 203 159.36 203 158 C202.34 158 201.68 158 201 158 C201 156.35 201 154.7 201 153 C200.01 153 199.02 153 198 153 C198 151.35 198 149.7 198 148 C197.34 148 196.68 148 196 148 C196 146.35 196 144.7 196 143 C195.34 143 194.68 143 194 143 C194 140.69 194 138.38 194 136 C193.01 136 192.02 136 191 136 C191 133.36 191 130.72 191 128 C190.34 128 189.68 128 189 128 C189 127.34 189 126.68 189 126 C188.01 126 187.02 126 186 126 C186 125.34 186 124.68 186 124 C181.38 124 176.76 124 172 124 C172 124.66 172 125.32 172 126 C170.35 126 168.7 126 167 126 C167 126.66 167 127.32 167 128 C163.04 128 159.08 128 155 128 C155 128.99 155 129.98 155 131 C152.69 131 150.38 131 148 131 C148 131.66 148 132.32 148 133 C146.35 133 144.7 133 143 133 C143 133.99 143 134.98 143 136 C133.43 136 123.86 136 114 136 C114 135.01 114 134.02 114 133 C109.05 133 104.1 133 99 133 C99 134.65 99 136.3 99 138 C99.99 138 100.98 138 102 138 C102 139.65 102 141.3 102 143 C102.66 143 103.32 143 104 143 C104 163.79 104 184.58 104 206 C103.34 206 102.68 206 102 206 C102 208.31 102 210.62 102 213 C101.01 213 100.02 213 99 213 C99 213.99 99 214.98 99 216 C98.34 216 97.68 216 97 216 C97 216.66 97 217.32 97 218 C90.4 218 83.8 218 77 218 C77 217.34 77 216.68 77 216 C76.34 216 75.68 216 75 216 C75 215.01 75 214.02 75 213 C74.01 213 73.02 213 72 213 C72 213.99 72 214.98 72 216 C71.34 216 70.68 216 70 216 C70 216.66 70 217.32 70 218 C63.73 218 57.46 218 51 218 C51 217.34 51 216.68 51 216 C50.01 216 49.02 216 48 216 C48 212.7 48 209.4 48 206 C53.61 206 59.22 206 65 206 C65 205.34 65 204.68 65 204 C65.99 204 66.98 204 68 204 C68 202.35 68 200.7 68 199 C67.01 199 66.02 199 65 199 C65 195.04 65 191.08 65 187 C64.34 187 63.68 187 63 187 C63 184.36 63 181.72 63 179 C62.01 179 61.02 179 60 179 C60 174.38 60 169.76 60 165 C59.34 165 58.68 165 58 165 C58 162.69 58 160.38 58 158 C57.34 158 56.68 158 56 158 C56 153.05 56 148.1 56 143 C55.01 143 54.02 143 53 143 C53 139.04 53 135.08 53 131 C51.35 131 49.7 131 48 131 C48 130.01 48 129.02 48 128 C47.34 128 46.68 128 46 128 C46 127.34 46 126.68 46 126 C45.01 126 44.02 126 43 126 C43 124.35 43 122.7 43 121 C42.34 121 41.68 121 41 121 C41 120.34 41 119.68 41 119 C40.34 119 39.68 119 39 119 C39 118.01 39 117.02 39 116 C38.01 116 37.02 116 36 116 C36 115.34 36 114.68 36 114 C35.34 114 34.68 114 34 114 C34 113.34 34 112.68 34 112 C33.01 112 32.02 112 31 112 C31 111.01 31 110.02 31 109 C30.34 109 29.68 109 29 109 C29 107.35 29 105.7 29 104 C28.01 104 27.02 104 26 104 C26 102.35 26 100.7 26 99 C25.34 99 24.68 99 24 99 C24 96.03 24 93.06 24 90 C23.34 90 22.68 90 22 90 C22 89.01 22 88.02 22 87 C21.01 87 20.02 87 19 87 C19 86.34 19 85.68 19 85 C18.34 85 17.68 85 17 85 C17 84.01 17 83.02 17 82 C16.01 82 15.02 82 14 82 C14 81.34 14 80.68 14 80 C13.34 80 12.68 80 12 80 C12 79.34 12 78.68 12 78 C11.34 78 10.68 78 10 78 C10 77.01 10 76.02 10 75 C7.36 75 4.72 75 2 75 C2 74.34 2 73.68 2 73 C0.35 73 -1.3 73 -3 73 C-3 72.01 -3 71.02 -3 70 C-4.32 70 -5.64 70 -7 70 C-7 70.99 -7 71.98 -7 73 C-7.99 73 -8.98 73 -10 73 C-10 73.66 -10 74.32 -10 75 C-11.65 75 -13.3 75 -15 75 C-15 75.99 -15 76.98 -15 78 C-17.31 78 -19.62 78 -22 78 C-22 78.66 -22 79.32 -22 80 C-23.65 80 -25.3 80 -27 80 C-27 80.66 -27 81.32 -27 82 C-29.31 82 -31.62 82 -34 82 C-34 81.34 -34 80.68 -34 80 C-34.66 80 -35.32 80 -36 80 C-36 79.34 -36 78.68 -36 78 C-36.99 78 -37.98 78 -39 78 C-39 76.35 -39 74.7 -39 73 C-39.66 73 -40.32 73 -41 73 C-41 72.01 -41 71.02 -41 70 C-41.99 70 -42.98 70 -44 70 C-44 69.34 -44 68.68 -44 68 C-44.66 68 -45.32 68 -46 68 C-46 67.01 -46 66.02 -46 65 C-46.99 65 -47.98 65 -49 65 C-49 64.34 -49 63.68 -49 63 C-49.66 63 -50.32 63 -51 63 C-51 59.04 -51 55.08 -51 51 C-50.34 51 -49.68 51 -49 51 C-49 50.34 -49 49.68 -49 49 C-48.01 49 -47.02 49 -46 49 C-46 47.35 -46 45.7 -46 44 C-45.34 44 -44.68 44 -44 44 C-44 43.01 -44 42.02 -44 41 C-43.01 41 -42.02 41 -41 41 C-41 40.34 -41 39.68 -41 39 C-40.34 39 -39.68 39 -39 39 C-39 38.01 -39 37.02 -39 36 C-38.01 36 -37.02 36 -36 36 C-36 34.68 -36 33.36 -36 32 C-35.34 32 -34.68 32 -34 32 C-34 31.01 -34 30.02 -34 29 C-33.34 29 -32.68 29 -32 29 C-32 28.34 -32 27.68 -32 27 C-31.01 27 -30.02 27 -29 27 C-29 26.01 -29 25.02 -29 24 C-28.34 24 -27.68 24 -27 24 C-27 23.34 -27 22.68 -27 22 C-26.01 22 -25.02 22 -24 22 C-24 21.01 -24 20.02 -24 19 C-23.34 19 -22.68 19 -22 19 C-22 18.34 -22 17.68 -22 17 C-19.69 17 -17.38 17 -15 17 C-15 16.34 -15 15.68 -15 15 C-13.35 15 -11.7 15 -10 15 C-10 13.35 -10 11.7 -10 10 C-10.66 10 -11.32 10 -12 10 C-12 7.69 -12 5.38 -12 3 C-9.69 3 -7.38 3 -5 3 C-5 3.66 -5 4.32 -5 5 C-4.34 5 -3.68 5 -3 5 C-3 5.66 -3 6.32 -3 7 C-2.01 7 -1.02 7 0 7 C0 4.69 0 2.38 0 0 Z`;
+
+// SVG transform from Tiger_shadow.svg: translate(65, 2)
+// Applied in canvas context so negative path coordinates resolve correctly.
+const SVG_TX = 65, SVG_TY = 2;
+
+let pantherBounds = null;
+const _pantherPath = new Path2D(PANTHER_D);
+
+function measurePantherPath() {
+  // With translate(65,2): x range ~14..394, y range ~2..222 → 500×300 is safe
+  const SCAN_W = 500, SCAN_H = 300;
+  const off  = new OffscreenCanvas(SCAN_W, SCAN_H);
+  const octx = off.getContext('2d');
+  octx.translate(SVG_TX, SVG_TY);  // bake in SVG transform so negatives don't clip
+  octx.fillStyle = '#000';
+  octx.fill(_pantherPath);
+
+  const data = octx.getImageData(0, 0, SCAN_W, SCAN_H).data;
+  let minX = SCAN_W, minY = SCAN_H, maxX = 0, maxY = 0;
+  for (let row = 0; row < SCAN_H; row++) {
+    for (let col = 0; col < SCAN_W; col++) {
+      if (data[(row * SCAN_W + col) * 4 + 3] > 16) {
+        if (col < minX) minX = col;
+        if (col > maxX) maxX = col;
+        if (row < minY) minY = row;
+        if (row > maxY) maxY = row;
+      }
+    }
+  }
+  pantherBounds = { minX, minY, w: maxX - minX, h: maxY - minY };
+}
+
+measurePantherPath();
+
+// ═══════════════════════════════════════════════════════════════════
+//  DRAW: EXACT PANTHER  (Path2D — no filter ever applied)
+//  Transform chain:  translate(offX,offY) → scale(s) → translate(65,2)
+//  The innermost translate bakes in the SVG's original offset so the
+//  path's negative-x coordinates land correctly in screen space.
+// ═══════════════════════════════════════════════════════════════════
+function drawExactPanther(tCtx, bounds, alpha) {
+  if (alpha < 0.005 || !pantherBounds) return;
+  const { minX, minY, w: pw, h: ph } = pantherBounds;
+
+  const scale = Math.min(bounds.w / pw, bounds.h / ph);
+  const offX  = bounds.x + (bounds.w - pw * scale) / 2 - minX * scale;
+  const offY  = bounds.y + (bounds.h - ph * scale) / 2 - minY * scale;
+
+  tCtx.save();
+  tCtx.globalAlpha = alpha;
+  tCtx.fillStyle   = SHADOW_COL;
+  tCtx.translate(offX, offY);
+  tCtx.scale(scale, scale);
+  tCtx.translate(SVG_TX, SVG_TY);  // innermost: SVG's own translate
+  tCtx.fill(_pantherPath);
+  tCtx.restore();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  DRAW: BACKGROUND
+// ═══════════════════════════════════════════════════════════════════
+function drawBackground() {
+  bgCtx.fillStyle = BG_WALL;
+  bgCtx.fillRect(0, 0, W, H);
+  const fg = bgCtx.createLinearGradient(0, FLOOR_Y, 0, H);
+  fg.addColorStop(0, BG_FLOOR);
+  fg.addColorStop(1, '#b4ac9e');
+  bgCtx.fillStyle = fg;
+  bgCtx.fillRect(0, FLOOR_Y, W, H-FLOOR_Y);
+  const vig = bgCtx.createRadialGradient(W/2,H/2,H*0.25, W/2,H/2,H*0.88);
+  vig.addColorStop(0, 'rgba(0,0,0,0)');
+  vig.addColorStop(1, 'rgba(0,0,0,0.14)');
+  bgCtx.fillStyle = vig;
+  bgCtx.fillRect(0, 0, W, H);
+}
+
+function drawGroundShadow(presence) {
+  if (presence < 0.05) return;
+  const cx = personBounds.x + personBounds.w*0.5;
+  bgCtx.save();
+  bgCtx.globalAlpha = presence * 0.11;
+  bgCtx.fillStyle = '#000';
+  bgCtx.beginPath();
+  bgCtx.ellipse(cx, FLOOR_Y+7, personBounds.w*0.30, 9, 0, 0, Math.PI*2);
+  bgCtx.fill();
+  bgCtx.restore();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  DRAW: DEBUG SKELETON
+// ═══════════════════════════════════════════════════════════════════
+const CONNECTIONS = [
+  [11,12],[11,13],[13,15],[12,14],[14,16],
+  [11,23],[12,24],[23,24],[23,25],[25,27],[24,26],[26,28]
+];
+
+function drawDebugSkeleton(lm) {
+  if (!lm || !debugVisible) return;
+  dctx.clearRect(0, 0, W, H);
+  dctx.strokeStyle='rgba(255,80,80,0.85)'; dctx.lineWidth=2;
+  dctx.fillStyle='rgba(255,200,50,0.9)';
+  CONNECTIONS.forEach(([a,b]) => {
+    if (lm[a].visibility<0.3||lm[b].visibility<0.3) return;
+    dctx.beginPath(); dctx.moveTo(lm[a].x*W,lm[a].y*H);
+    dctx.lineTo(lm[b].x*W,lm[b].y*H); dctx.stroke();
+  });
+  lm.forEach(p => {
+    if (p.visibility<0.3) return;
+    dctx.beginPath(); dctx.arc(p.x*W,p.y*H,4,0,Math.PI*2); dctx.fill();
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  MAIN RENDER
+//
+//  Single-layer morph — human silhouette and exact Path2D panther are
+//  both drawn onto one offscreen canvas at complementary alphas, then
+//  the combined image passes through the slime filter as one organism.
+//
+//  Because the morph target IS the real SVG path from the start,
+//  the displacement always pulls toward the correct final shape.
+//  sin(morph × π) × SLIME_PEAK ensures the filter is zero at both
+//  ends (clean shapes) and peaks at mid-morph (maximum organic wriggle).
+// ═══════════════════════════════════════════════════════════════════
+function render() {
+  // ── advance morph ─────────────────────────────────────────────
+  if (pantherActive)
+    morphProgress = Math.min(1, morphProgress + MORPH_IN_SPEED);
+  else
+    morphProgress = Math.max(0, morphProgress - MORPH_OUT_SPEED);
+
+  const eased      = easeInOut(morphProgress);
+  const humanAlpha = Math.max(0, 1 - eased * 1.15);
+  const catAlpha   = eased;
+
+  // ── slime displacement ────────────────────────────────────────
+  const noiseAmp = Math.sin(morphProgress * Math.PI) * SLIME_PEAK;
+  slimeDisp.setAttribute('scale', noiseAmp.toFixed(1));
+  shadowCanvas.style.filter  = noiseAmp > 1 ? 'url(#slime)' : 'none';
+  shadowCanvas.style.opacity = 1;   // single layer, always fully opaque
+
+  // ── background ────────────────────────────────────────────────
+  drawBackground();
+  drawGroundShadow(Math.max(humanAlpha, catAlpha * 0.8));
+
+  // ── composite both shapes onto one offscreen canvas ───────────
+  //    The filter sees one unified blob morphing — no layer switch,
+  //    no shape jump, the path is the direct morph target throughout.
+  const off    = new OffscreenCanvas(W, H);
+  const offCtx = off.getContext('2d');
+
+  if (poseResults?.segmentationMask && humanAlpha > 0.005)
+    drawHuman(offCtx, poseResults.segmentationMask, humanAlpha);
+
+  if (catAlpha > 0.005)
+    drawExactPanther(offCtx, personBounds, catAlpha);
+
+  shadowCtx.clearRect(0, 0, W, H);
+  shadowCtx.drawImage(off, 0, 0);
+
+  // ── HUD ───────────────────────────────────────────────────────
+  const pct = Math.round(morphProgress * 100);
+  morphFill.style.width = pct + '%';
+  morphPct.textContent  = pct + '%';
+  if (pantherActive) {
+    modeBadge.textContent='&#9654; PANTHER'; modeBadge.className='badge panther';
+  } else if (morphProgress > 0.02) {
+    modeBadge.textContent='&#9680; MORPHING'; modeBadge.className='badge morphing';
+  } else {
+    modeBadge.textContent='&#9646; HUMAN';   modeBadge.className='badge';
+  }
+}
+// ═══════════════════════════════════════════════════════════════════
+//  CAMERA + MEDIAPIPE
+// ═══════════════════════════════════════════════════════════════════
+async function setup() {
+  hintEl.textContent = 'Requesting camera access…';
+  const video = document.getElementById('video');
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width:W, height:H, facingMode:'user' }, audio:false
+    });
+    video.srcObject = stream;
+    await new Promise(r => { video.onloadedmetadata = r; });
+    video.play();
+  } catch(err) {
+    hintEl.textContent = `Camera blocked: ${err.message}`;
+    modeBadge.textContent='X NO CAMERA'; modeBadge.className='badge';
+    return;
+  }
+
+  hintEl.textContent = 'Loading AI model — first load ~20 s…';
+
+  const pose = new Pose({ locateFile: f=>`https://cdn.jsdelivr.net/npm/@mediapipe/pose/${f}` });
+  pose.setOptions({
+    modelComplexity:1, smoothLandmarks:true,
+    enableSegmentation:true, smoothSegmentation:true,
+    minDetectionConfidence:0.55, minTrackingConfidence:0.55
+  });
+
+  pose.onResults(results => {
+    poseResults = results;
+    const lm = results.poseLandmarks;
+    if (detectTigerPose(lm)) {
+      holdCounter++;
+      if (holdCounter >= HOLD_FRAMES) pantherActive = true;
+    } else {
+      holdCounter = Math.max(0, holdCounter-2);
+      if (holdCounter === 0) pantherActive = false;
+    }
+    updatePersonBounds(lm);
+    drawDebugSkeleton(lm);
+    render();
+  });
+
+  const camera = new Camera(video, {
+    onFrame: async () => { await pose.send({ image:video }); },
+    width:W, height:H
+  });
+  await camera.start();
+
+  modeBadge.textContent='&#9646; HUMAN'; modeBadge.className='badge';
+  hintEl.textContent='Crouch low  ·  Spread arms wide  ·  Hold the pose';
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key.toLowerCase()==='d') {
+    debugVisible = !debugVisible;
+    debugCvs.classList.toggle('visible', debugVisible);
+    if (!debugVisible) dctx.clearRect(0,0,W,H);
+  }
+});
+
+setup().catch(err => { hintEl.textContent=`Error: ${err.message}`; console.error(err); });
+</script>
+</body>
+</html>
